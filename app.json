@@ -1,0 +1,11 @@
+{
+  "name": "Approve-All-JoinRequests",
+  "description": "Approve all pending join requests on your telegram channel with using user session",
+  "keywords": ["telegram", "bot"],
+  "repository": "https://github.com/huyikaka/cc",
+  "env": {
+    "SESSION": {"description": "pyrogram v2 session string ⚠️ v2 required ⚠️", "value": ""},
+    "CHANNELS": {"description": "ID of you Groups or channels (seperate by spaces). This variable is command work only in your group", "value": "", "required": false}              
+  },
+  "buildpacks": [{"url": "heroku/python"}]
+}
