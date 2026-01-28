@@ -1,6 +1,5 @@
-# ================= RENDER PORT BIND (TOP) =================
-import os
-import threading
+# ================= RENDER PORT FIX =================
+import os, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 class Health(BaseHTTPRequestHandler):
@@ -14,13 +13,11 @@ def start_http():
     HTTPServer(("0.0.0.0", port), Health).serve_forever()
 
 threading.Thread(target=start_http, daemon=True).start()
-print("🌐 HTTP PORT READY")
+print("🌐 PORT READY")
 
-# ================= MAIN IMPORTS =================
-import asyncio
-import time
-from flask import Flask, request, jsonify
-
+# ================= IMPORTS =================
+import asyncio, time
+from flask import Flask, request, Response
 from telethon import TelegramClient, events
 from telethon.tl.types import UpdatePendingJoinRequests
 from telethon.tl.functions.messages import GetChatInviteImportersRequest
@@ -28,13 +25,11 @@ from telethon.tl.functions.messages import GetChatInviteImportersRequest
 # ================= CONFIG =================
 API_ID = 33618078
 API_HASH = "db0e27743fc356d33be5293e91979a4c"
-
-SESSION_NAME = "user_session"
-CACHE_TTL = 10   # seconds
+SESSION = "user_session"
+CACHE_TTL = 10
 # =========================================
 
-# ================= GLOBAL CACHE =================
-# PENDING[channel_id][user_id] = timestamp
+# channel → { user : timestamp }
 PENDING = {}
 
 def norm(cid):
@@ -43,92 +38,76 @@ def norm(cid):
 
 def cleanup():
     now = time.time()
-    for ch in list(PENDING.keys()):
-        for u in list(PENDING[ch].keys()):
+    for ch in list(PENDING):
+        for u in list(PENDING[ch]):
             if now - PENDING[ch][u] > CACHE_TTL:
                 del PENDING[ch][u]
         if not PENDING[ch]:
             del PENDING[ch]
 
-# ================= TELETHON =================
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+client = TelegramClient(SESSION, API_ID, API_HASH)
 
+# ================= LIVE LISTENER =================
 @client.on(events.Raw)
-async def on_pending(update):
+async def on_raw(update):
     if isinstance(update, UpdatePendingJoinRequests):
-        channel = norm(update.peer.channel_id)
-        now = time.time()
-        PENDING.setdefault(channel, {})
+        ch = norm(update.peer.channel_id)
+        PENDING.setdefault(ch, {})
         for uid in update.recent_requesters:
-            PENDING[channel][str(uid)] = now
-            print(f"🟡 LIVE REQUEST | user={uid} channel={channel}")
+            PENDING[ch][str(uid)] = time.time()
+            print(f"PENDING | {uid} | {ch}")
 
 # ================= FLASK API =================
 app = Flask(__name__)
 
 @app.route("/check")
 def check():
-    user = request.args.get("user", type=str)
-    channel = request.args.get("channelid", type=str)
+    user = request.args.get("user")
+    channel = request.args.get("channelid")
 
     if not user or not channel:
-        return jsonify({
-            "ok": False,
-            "error": "user or channelid missing"
-        }), 400
+        return Response("false", mimetype="text/plain")
 
     user = user.strip()
     channel = norm(channel)
-
     cleanup()
 
-    # 1️⃣ FAST CHECK (live cache)
+    # FAST CACHE CHECK
     if channel in PENDING and user in PENDING[channel]:
-        return jsonify({
-            "ok": True,
-            "requested": True,
-            "source": "live"
-        })
+        return Response("true", mimetype="text/plain")
 
-    # 2️⃣ SERVER CONFIRM (slow but accurate)
+    # SERVER CONFIRM
     async def server_check():
         try:
             entity = await client.get_entity(int(channel))
-            result = await client(GetChatInviteImportersRequest(
+            res = await client(GetChatInviteImportersRequest(
                 peer=entity,
                 requested=True,
                 limit=100
             ))
-            for imp in result.importers:
-                if str(imp.user_id) == user:
+            for r in res.importers:
+                if str(r.user_id) == user:
                     PENDING.setdefault(channel, {})[user] = time.time()
                     return True
-        except Exception as e:
-            print("⚠️ Server check error:", e)
+        except:
+            pass
         return False
 
     try:
         loop = asyncio.get_event_loop()
-        requested = loop.run_until_complete(server_check())
+        ok = loop.run_until_complete(server_check())
     except RuntimeError:
-        requested = asyncio.run(server_check())
+        ok = asyncio.run(server_check())
 
-    return jsonify({
-        "ok": True,
-        "requested": requested,
-        "source": "server" if requested else "none"
-    })
+    return Response("true" if ok else "false", mimetype="text/plain")
 
 # ================= MAIN =================
 async def main():
     await client.start()
-    print("👤 TELEGRAM USER LOGGED IN")
+    print("👤 USER LOGGED IN")
     await client.run_until_disconnected()
 
-def run_telethon():
-    asyncio.run(main())
-
-threading.Thread(target=run_telethon, daemon=True).start()
+threading.Thread(target=lambda: asyncio.run(main()), daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
