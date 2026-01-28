@@ -1,182 +1,134 @@
-# ================= RENDER PORT FIX (TOP PE HI HONA CHAHIYE) =================
+# ================= RENDER PORT BIND (TOP) =================
 import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-class HealthHandler(BaseHTTPRequestHandler):
+class Health(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
 
-def start_http_server():
+def start_http():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", port), Health).serve_forever()
 
-threading.Thread(target=start_http_server, daemon=True).start()
-print("🌐 HTTP PORT BOUND FOR RENDER")
+threading.Thread(target=start_http, daemon=True).start()
+print("🌐 HTTP PORT READY")
 
-# ================= NORMAL BOT CODE BELOW =================
+# ================= MAIN IMPORTS =================
 import asyncio
-import logging
 import time
-from telethon import TelegramClient, events, Button
-from telethon.tl.functions.messages import GetChatInviteImportersRequest
+from flask import Flask, request, jsonify
+
+from telethon import TelegramClient, events
 from telethon.tl.types import UpdatePendingJoinRequests
-from telethon.errors import UserNotParticipantError
+from telethon.tl.functions.messages import GetChatInviteImportersRequest
 
 # ================= CONFIG =================
 API_ID = 33618078
 API_HASH = "db0e27743fc356d33be5293e91979a4c"
 
-BOT_TOKEN = "8218412333:AAFIcvY2eiAKl5Xtzd4lvVhkLVOBlHH-o2c"
-
-CHANNEL_ID = -1001661832857
-CHANNEL_LINK = "https://t.me/+EFAM9Cl41QgyNDVl"
-
-PENDING_TTL = 10
+SESSION_NAME = "user_session"
+CACHE_TTL = 10   # seconds
 # =========================================
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("JOIN-SYSTEM")
+# ================= GLOBAL CACHE =================
+# PENDING[channel_id][user_id] = timestamp
+PENDING = {}
 
-# ================= TELEGRAM CLIENTS =================
-userbot = TelegramClient("user_session", API_ID, API_HASH)
-bot = TelegramClient("bot_session", API_ID, API_HASH)
+def norm(cid):
+    cid = str(cid).strip()
+    return cid if cid.startswith("-100") else "-100" + cid
 
-# LIVE CACHE { user_id : timestamp }
-LIVE_PENDING_CACHE = {}
-
-def clean_cache():
+def cleanup():
     now = time.time()
-    for uid in list(LIVE_PENDING_CACHE.keys()):
-        if now - LIVE_PENDING_CACHE[uid] > PENDING_TTL:
-            del LIVE_PENDING_CACHE[uid]
+    for ch in list(PENDING.keys()):
+        for u in list(PENDING[ch].keys()):
+            if now - PENDING[ch][u] > CACHE_TTL:
+                del PENDING[ch][u]
+        if not PENDING[ch]:
+            del PENDING[ch]
 
-# ================= UI =================
-async def show_agent_page(event, edit=False):
-    text = "✅ **Access Granted!**"
-    buttons = [[Button.inline("🕵️‍♂️ Get Agent", b"get_agent")]]
-    try:
-        if edit:
-            await event.edit(text, buttons=buttons)
-        else:
-            await event.reply(text, buttons=buttons)
-    except:
-        pass
+# ================= TELETHON =================
+client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
-async def show_join_page(event, edit=False):
-    text = "👋 **Please join the channel first**"
-    buttons = [
-        [Button.url("🚀 Join Channel", CHANNEL_LINK)],
-        [Button.inline("🔄 Verify", b"check_status")]
-    ]
-    try:
-        if edit:
-            await event.edit(text, buttons=buttons)
-        else:
-            await event.reply(text, buttons=buttons)
-    except:
-        pass
+@client.on(events.Raw)
+async def on_pending(update):
+    if isinstance(update, UpdatePendingJoinRequests):
+        channel = norm(update.peer.channel_id)
+        now = time.time()
+        PENDING.setdefault(channel, {})
+        for uid in update.recent_requesters:
+            PENDING[channel][str(uid)] = now
+            print(f"🟡 LIVE REQUEST | user={uid} channel={channel}")
 
-# ================= CORE =================
-async def is_actually_pending(user_id):
-    clean_cache()
+# ================= FLASK API =================
+app = Flask(__name__)
 
-    if user_id in LIVE_PENDING_CACHE:
-        return True
+@app.route("/check")
+def check():
+    user = request.args.get("user", type=str)
+    channel = request.args.get("channelid", type=str)
 
-    try:
-        entity = await userbot.get_entity(CHANNEL_ID)
-        result = await userbot(GetChatInviteImportersRequest(
-            peer=entity,
-            requested=True,
-            limit=100
-        ))
+    if not user or not channel:
+        return jsonify({
+            "ok": False,
+            "error": "user or channelid missing"
+        }), 400
 
-        for imp in result.importers:
-            if imp.user_id == user_id:
-                LIVE_PENDING_CACHE[user_id] = time.time()
-                return True
-        return False
-    except Exception as e:
-        log.warning(f"Pending check error: {e}")
-        return False
+    user = user.strip()
+    channel = norm(channel)
 
-# ================= USERBOT LISTENER =================
-@userbot.on(events.Raw)
-async def on_raw(event):
-    if isinstance(event, UpdatePendingJoinRequests):
+    cleanup()
+
+    # 1️⃣ FAST CHECK (live cache)
+    if channel in PENDING and user in PENDING[channel]:
+        return jsonify({
+            "ok": True,
+            "requested": True,
+            "source": "live"
+        })
+
+    # 2️⃣ SERVER CONFIRM (slow but accurate)
+    async def server_check():
         try:
-            clean_id = int(str(CHANNEL_ID).replace("-100", ""))
-            if event.peer.channel_id == clean_id:
-                for uid in event.recent_requesters:
-                    LIVE_PENDING_CACHE[uid] = time.time()
-                    log.info(f"PENDING {uid}")
-        except:
-            pass
-
-# ================= BOT HANDLERS =================
-@bot.on(events.NewMessage(pattern="/start"))
-async def start(event):
-    uid = event.sender_id
-
-    try:
-        await bot.get_permissions(CHANNEL_ID, uid)
-        await show_agent_page(event)
-        return
-    except UserNotParticipantError:
-        pass
-    except:
-        pass
-
-    if await is_actually_pending(uid):
-        await show_agent_page(event)
-    else:
-        await show_join_page(event)
-
-@bot.on(events.CallbackQuery(data=b"check_status"))
-async def verify(event):
-    uid = event.sender_id
+            entity = await client.get_entity(int(channel))
+            result = await client(GetChatInviteImportersRequest(
+                peer=entity,
+                requested=True,
+                limit=100
+            ))
+            for imp in result.importers:
+                if str(imp.user_id) == user:
+                    PENDING.setdefault(channel, {})[user] = time.time()
+                    return True
+        except Exception as e:
+            print("⚠️ Server check error:", e)
+        return False
 
     try:
-        await bot.get_permissions(CHANNEL_ID, uid)
-        await event.answer("✅ Verified", alert=True)
-        await show_agent_page(event, edit=True)
-        return
-    except UserNotParticipantError:
-        pass
-    except:
-        pass
+        loop = asyncio.get_event_loop()
+        requested = loop.run_until_complete(server_check())
+    except RuntimeError:
+        requested = asyncio.run(server_check())
 
-    if await is_actually_pending(uid):
-        await event.answer("⏳ Pending", alert=True)
-        await show_agent_page(event, edit=True)
-    else:
-        LIVE_PENDING_CACHE.pop(uid, None)
-        await event.answer("❌ Not joined", alert=True)
-        await show_join_page(event, edit=True)
-
-@bot.on(events.CallbackQuery(data=b"get_agent"))
-async def agent(event):
-    try:
-        await event.answer("Connecting...", alert=True)
-        await event.edit("🕵️‍♂️ Agent will contact you soon.")
-    except:
-        pass
+    return jsonify({
+        "ok": True,
+        "requested": requested,
+        "source": "server" if requested else "none"
+    })
 
 # ================= MAIN =================
 async def main():
-    log.info("Starting Telegram clients...")
-    await userbot.start()
-    await bot.start(bot_token=BOT_TOKEN)
+    await client.start()
+    print("👤 TELEGRAM USER LOGGED IN")
+    await client.run_until_disconnected()
 
-    log.info("SYSTEM ONLINE (RENDER FIXED)")
-    await asyncio.gather(
-        userbot.run_until_disconnected(),
-        bot.run_until_disconnected()
-    )
+def run_telethon():
+    asyncio.run(main())
+
+threading.Thread(target=run_telethon, daemon=True).start()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    app.run(host="0.0.0.0", port=5000)
