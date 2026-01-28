@@ -1,10 +1,26 @@
-import asyncio
-import logging
-import time
+# ================= RENDER PORT FIX (TOP PE HI HONA CHAHIYE) =================
 import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_http_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+threading.Thread(target=start_http_server, daemon=True).start()
+print("🌐 HTTP PORT BOUND FOR RENDER")
+
+# ================= NORMAL BOT CODE BELOW =================
+import asyncio
+import logging
+import time
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.messages import GetChatInviteImportersRequest
 from telethon.tl.types import UpdatePendingJoinRequests
@@ -19,27 +35,13 @@ BOT_TOKEN = "8218412333:AAFIcvY2eiAKl5Xtzd4lvVhkLVOBlHH-o2c"
 CHANNEL_ID = -1001661832857
 CHANNEL_LINK = "https://t.me/+EFAM9Cl41QgyNDVl"
 
-PENDING_TTL = 10   # seconds
+PENDING_TTL = 10
 # =========================================
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("JOIN-SYSTEM")
 
-# ================= HTTP SERVER (RENDER FIX) =================
-class Health(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-def run_http():
-    port = int(os.environ.get("PORT", 10000))
-    HTTPServer(("0.0.0.0", port), Health).serve_forever()
-
-threading.Thread(target=run_http, daemon=True).start()
-log.info("🌐 HTTP server started for Render")
-
-# ================= TELEGRAM =================
+# ================= TELEGRAM CLIENTS =================
 userbot = TelegramClient("user_session", API_ID, API_HASH)
 bot = TelegramClient("bot_session", API_ID, API_HASH)
 
@@ -54,7 +56,7 @@ def clean_cache():
 
 # ================= UI =================
 async def show_agent_page(event, edit=False):
-    text = "✅ **Access Granted!**\n\nYou are eligible."
+    text = "✅ **Access Granted!**"
     buttons = [[Button.inline("🕵️‍♂️ Get Agent", b"get_agent")]]
     try:
         if edit:
@@ -65,10 +67,10 @@ async def show_agent_page(event, edit=False):
         pass
 
 async def show_join_page(event, edit=False):
-    text = "👋 **Welcome!**\n\nPlease join the channel or send request."
+    text = "👋 **Please join the channel first**"
     buttons = [
         [Button.url("🚀 Join Channel", CHANNEL_LINK)],
-        [Button.inline("🔄 Verify Status", b"check_status")]
+        [Button.inline("🔄 Verify", b"check_status")]
     ]
     try:
         if edit:
@@ -78,7 +80,7 @@ async def show_join_page(event, edit=False):
     except:
         pass
 
-# ================= CORE LOGIC =================
+# ================= CORE =================
 async def is_actually_pending(user_id):
     clean_cache()
 
@@ -93,14 +95,13 @@ async def is_actually_pending(user_id):
             limit=100
         ))
 
-        for importer in result.importers:
-            if importer.user_id == user_id:
+        for imp in result.importers:
+            if imp.user_id == user_id:
                 LIVE_PENDING_CACHE[user_id] = time.time()
                 return True
-
         return False
     except Exception as e:
-        log.warning(f"Pending check failed: {e}")
+        log.warning(f"Pending check error: {e}")
         return False
 
 # ================= USERBOT LISTENER =================
@@ -112,17 +113,17 @@ async def on_raw(event):
             if event.peer.channel_id == clean_id:
                 for uid in event.recent_requesters:
                     LIVE_PENDING_CACHE[uid] = time.time()
-                    log.info(f"🔔 Live Pending: {uid}")
+                    log.info(f"PENDING {uid}")
         except:
             pass
 
 # ================= BOT HANDLERS =================
 @bot.on(events.NewMessage(pattern="/start"))
-async def start_handler(event):
-    user_id = event.sender_id
+async def start(event):
+    uid = event.sender_id
 
     try:
-        await bot.get_permissions(CHANNEL_ID, user_id)
+        await bot.get_permissions(CHANNEL_ID, uid)
         await show_agent_page(event)
         return
     except UserNotParticipantError:
@@ -130,17 +131,17 @@ async def start_handler(event):
     except:
         pass
 
-    if await is_actually_pending(user_id):
+    if await is_actually_pending(uid):
         await show_agent_page(event)
     else:
         await show_join_page(event)
 
 @bot.on(events.CallbackQuery(data=b"check_status"))
 async def verify(event):
-    user_id = event.sender_id
+    uid = event.sender_id
 
     try:
-        await bot.get_permissions(CHANNEL_ID, user_id)
+        await bot.get_permissions(CHANNEL_ID, uid)
         await event.answer("✅ Verified", alert=True)
         await show_agent_page(event, edit=True)
         return
@@ -149,35 +150,29 @@ async def verify(event):
     except:
         pass
 
-    if await is_actually_pending(user_id):
-        await event.answer("⏳ Request Pending", alert=True)
+    if await is_actually_pending(uid):
+        await event.answer("⏳ Pending", alert=True)
         await show_agent_page(event, edit=True)
     else:
-        LIVE_PENDING_CACHE.pop(user_id, None)
+        LIVE_PENDING_CACHE.pop(uid, None)
         await event.answer("❌ Not joined", alert=True)
         await show_join_page(event, edit=True)
 
 @bot.on(events.CallbackQuery(data=b"get_agent"))
 async def agent(event):
     try:
-        await event.answer("🔄 Connecting...", alert=True)
-        await event.edit("🕵️‍♂️ **Agent Notified!**\n\nWe will contact you.")
+        await event.answer("Connecting...", alert=True)
+        await event.edit("🕵️‍♂️ Agent will contact you soon.")
     except:
         pass
 
 # ================= MAIN =================
 async def main():
-    log.info("🔄 Starting userbot & bot...")
+    log.info("Starting Telegram clients...")
     await userbot.start()
     await bot.start(bot_token=BOT_TOKEN)
 
-    try:
-        entity = await userbot.get_entity(CHANNEL_ID)
-        log.info(f"✅ Channel connected: {entity.title}")
-    except Exception as e:
-        log.warning(f"Userbot channel access issue: {e}")
-
-    log.info("🚀 SYSTEM ONLINE (Render Ready)")
+    log.info("SYSTEM ONLINE (RENDER FIXED)")
     await asyncio.gather(
         userbot.run_until_disconnected(),
         bot.run_until_disconnected()
