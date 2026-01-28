@@ -1,6 +1,7 @@
 import os
 import asyncio
 import time
+import threading
 from flask import Flask, request, Response
 
 from telethon import TelegramClient, events
@@ -14,6 +15,8 @@ SESSION = "user_session"
 
 CACHE_TTL = 600  # 10 minutes
 PORT = int(os.environ.get("PORT", 10000))
+
+API_PASS = "56564565665423423hgsg$%##"  # 🔐 PASSWORD
 # =========================================
 
 app = Flask(__name__)
@@ -54,6 +57,10 @@ def root():
 
 @app.route("/check")
 def check():
+    # 🔐 PASSWORD CHECK
+    if request.args.get("pass") != API_PASS:
+        return Response("false", mimetype="text/plain")
+
     user = request.args.get("user")
     channel = request.args.get("channelid")
 
@@ -64,7 +71,7 @@ def check():
     channel = norm(channel)
     cleanup()
 
-    # 1️⃣ CACHE CHECK (10 min memory)
+    # 1️⃣ CACHE CHECK (10 min)
     if channel in PENDING and user in PENDING[channel]:
         return Response("true", mimetype="text/plain")
 
@@ -100,7 +107,6 @@ async def start_telethon():
     print("👤 TELEGRAM USER LOGGED IN")
     await client.run_until_disconnected()
 
-import threading
 threading.Thread(target=lambda: asyncio.run(start_telethon()), daemon=True).start()
 
 if __name__ == "__main__":
