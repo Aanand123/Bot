@@ -1,23 +1,8 @@
-# ================= RENDER PORT FIX =================
-import os, threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
-class Health(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-def start_http():
-    port = int(os.environ.get("PORT", 10000))
-    HTTPServer(("0.0.0.0", port), Health).serve_forever()
-
-threading.Thread(target=start_http, daemon=True).start()
-print("🌐 PORT READY")
-
-# ================= IMPORTS =================
-import asyncio, time
+import os
+import asyncio
+import time
 from flask import Flask, request, Response
+
 from telethon import TelegramClient, events
 from telethon.tl.types import UpdatePendingJoinRequests
 from telethon.tl.functions.messages import GetChatInviteImportersRequest
@@ -26,10 +11,14 @@ from telethon.tl.functions.messages import GetChatInviteImportersRequest
 API_ID = 33618078
 API_HASH = "db0e27743fc356d33be5293e91979a4c"
 SESSION = "user_session"
-CACHE_TTL = 10
+
+CACHE_TTL = 600  # 10 minutes
+PORT = int(os.environ.get("PORT", 10000))
 # =========================================
 
-# channel → { user : timestamp }
+app = Flask(__name__)
+
+# channel -> { user : timestamp }
 PENDING = {}
 
 def norm(cid):
@@ -45,9 +34,9 @@ def cleanup():
         if not PENDING[ch]:
             del PENDING[ch]
 
+# ================= TELETHON =================
 client = TelegramClient(SESSION, API_ID, API_HASH)
 
-# ================= LIVE LISTENER =================
 @client.on(events.Raw)
 async def on_raw(update):
     if isinstance(update, UpdatePendingJoinRequests):
@@ -55,10 +44,13 @@ async def on_raw(update):
         PENDING.setdefault(ch, {})
         for uid in update.recent_requesters:
             PENDING[ch][str(uid)] = time.time()
-            print(f"PENDING | {uid} | {ch}")
+            print(f"🟡 REQUEST CACHED | user={uid} channel={ch}")
 
-# ================= FLASK API =================
-app = Flask(__name__)
+# ================= ROUTES =================
+
+@app.route("/")
+def root():
+    return "API RUNNING", 200
 
 @app.route("/check")
 def check():
@@ -72,11 +64,11 @@ def check():
     channel = norm(channel)
     cleanup()
 
-    # FAST CACHE CHECK
+    # 1️⃣ CACHE CHECK (10 min memory)
     if channel in PENDING and user in PENDING[channel]:
         return Response("true", mimetype="text/plain")
 
-    # SERVER CONFIRM
+    # 2️⃣ SERVER CONFIRM
     async def server_check():
         try:
             entity = await client.get_entity(int(channel))
@@ -89,8 +81,8 @@ def check():
                 if str(r.user_id) == user:
                     PENDING.setdefault(channel, {})[user] = time.time()
                     return True
-        except:
-            pass
+        except Exception as e:
+            print("⚠️ server error:", e)
         return False
 
     try:
@@ -101,13 +93,16 @@ def check():
 
     return Response("true" if ok else "false", mimetype="text/plain")
 
-# ================= MAIN =================
-async def main():
+# ================= START =================
+
+async def start_telethon():
     await client.start()
-    print("👤 USER LOGGED IN")
+    print("👤 TELEGRAM USER LOGGED IN")
     await client.run_until_disconnected()
 
-threading.Thread(target=lambda: asyncio.run(main()), daemon=True).start()
+import threading
+threading.Thread(target=lambda: asyncio.run(start_telethon()), daemon=True).start()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    print("🌐 Flask listening on port", PORT)
+    app.run(host="0.0.0.0", port=PORT)
