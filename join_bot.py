@@ -12,7 +12,7 @@ API_ID = 33618078
 API_HASH = "db0e27743fc356d33be5293e91979a4c"
 SESSION = "user_session"
 
-CACHE_TTL = 600  # 10 minutes
+CACHE_TTL = 6000  # 10 minutes
 PORT = int(os.environ.get("PORT", 10000))
 # =========================================
 
