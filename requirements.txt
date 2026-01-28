@@ -1,0 +1,3 @@
+telethon
+flask
+pip install telethon python-telegram-bot==20.8
